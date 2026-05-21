@@ -81,13 +81,13 @@ from model import Brain, DQN, AuxNet  # noqa: E402
 # requiring phi to reconstruct scores adds a direct, dense supervisory signal
 # on every sample and makes the score channels gradient-relevant.
 #
-# Output is 4 scalars: predicted scores in [self, +1, +2, +3] order, scaled
+# Output is 3 scalars: predicted scores in [self, +1, +2] order, scaled
 # by 1/SCORE_SCALE so the regression target sits roughly in [0, 1].
 SCORE_SCALE = 100000.0  # 25000 → 0.25, 1000 → 0.01, 100000 → 1.0
 
 
 class ScoreHead(nn.Module):
-    """Predict current 4-player scores from phi (auxiliary task)."""
+    """Predict current 3-player scores from phi (auxiliary task)."""
 
     def __init__(self, phi_dim: int = 1024):
         super().__init__()
@@ -96,7 +96,7 @@ class ScoreHead(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(phi_dim, 256),
             nn.ReLU(inplace=True),
-            nn.Linear(256, 4),
+            nn.Linear(256, 3),  # 3 players
         )
 
     def forward(self, phi: torch.Tensor) -> torch.Tensor:
@@ -118,19 +118,19 @@ class ScoreHead(nn.Module):
 # loss time as scores.argsort(descending).argsort. Cross-entropy.
 
 class RankHead(nn.Module):
-    """Predict 4-way rank distribution for each of 4 players."""
+    """Predict 3-way rank distribution for each of 3 players."""
 
     def __init__(self, phi_dim: int = 1024):
         super().__init__()
         self.fc = nn.Sequential(
             nn.Linear(phi_dim, 256),
             nn.ReLU(inplace=True),
-            nn.Linear(256, 16),  # 4 players × 4 rank classes
+            nn.Linear(256, 9),  # 3 players × 3 rank classes
         )
 
     def forward(self, phi: torch.Tensor) -> torch.Tensor:
         # Returns (B, 4, 4): [batch, player, rank-class].
-        return self.fc(phi).reshape(*phi.shape[:-1], 4, 4)
+        return self.fc(phi).reshape(*phi.shape[:-1], 3, 3)
 
 
 # ---------- gap-prediction auxiliary head ----------
@@ -324,15 +324,15 @@ def compute_loss(
     else:
         score_loss = torch.zeros((), device=device, dtype=torch.float32)
 
-    # Rank-prediction loss: each player's rank (0=highest, 3=lowest).
+    # Rank-prediction loss: each player's rank (0=highest, 2=lowest).
     # rank_target[b, p] = how many players have a strictly higher score than p
     # (ties broken by player index to give a deterministic target).
     if scores is not None and rank_weight > 0:
         # argsort descending → indices sorted by score; argsort that → ranks.
         # Stable sort (default in torch) means ties resolve by original order.
         rank_target = scores.argsort(dim=-1, descending=True).argsort(dim=-1)
-        rank_logits = rank_head(phi)  # (B, 4, 4)
-        # CrossEntropy expects (B, C, ...) — so transpose to (B, 4 classes, 4 players)
+        rank_logits = rank_head(phi)  # (B, 3, 3)
+        # CrossEntropy expects (B, C, ...) — so transpose to (B, 3 classes, 3 players)
         rank_loss = ce(rank_logits.transpose(-2, -1), rank_target)
     else:
         rank_loss = torch.zeros((), device=device, dtype=torch.float32)
@@ -382,7 +382,7 @@ def main() -> None:
     parser.add_argument("--best-save", default=None)
     parser.add_argument("--tensorboard", required=True)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--version", type=int, default=4)
+    parser.add_argument("--version", type=int, default=4)  # sanma uses v4 obs shape
     parser.add_argument("--conv-channels", type=int, default=192)
     parser.add_argument("--num-blocks", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=256)

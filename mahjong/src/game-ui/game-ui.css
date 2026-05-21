@@ -1,0 +1,283 @@
+/* ============================================================
+ * Mahjong table layout.
+ *
+ * Approach: viewport fills the screen. Board is a square whose side
+ * = the shorter viewport dimension, centered. Each player area is
+ * absolutely positioned from the board center, rotated as a whole.
+ * ============================================================ */
+
+:root {
+  --tile-w: 40px;
+  --tile-h: 60px;
+  --table-bg: #1a5e3b;
+  --table-bg-glow: #237049;
+  --seat-active-glow: #ffd770;
+  --info-bg: rgba(0,0,0,0.45);
+  --center-size: 25%;
+}
+
+/* ---------- Table root ---------- */
+.table-root {
+  width: 100vw;
+  height: 100vh;
+  background: radial-gradient(ellipse at center, var(--table-bg-glow) 0%, var(--table-bg) 70%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+}
+
+/* Square board, side = shorter viewport dim, centered. */
+.table-board {
+  --board: min(100vw, 100vh);
+  width: var(--board);
+  height: var(--board);
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* ---------- Player areas ----------
+ * Each is a quarter-circle sector emanating from the board center.
+ * player-inner holds the content (always bottom perspective) and rotates.
+ * Bottom = 0°, left = +90°, top = 180°, right = -90°.
+ */
+.player-area {
+  position: absolute;
+  /* Each player occupies a half-board square anchored at center.
+   * Width & height = 50% of board. */
+  width: calc(var(--board) / 2);
+  height: calc(var(--board) / 2);
+}
+
+.player-area-bottom {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.player-area-top {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.player-area-left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.player-area-right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* Inner content: bottom perspective, rotated.
+ * padding-top = half of max river row width (5 vertical + 1 horizontal tile),
+ * ensures 4 players' rivers don't overlap around the center. */
+.player-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: calc((5 * var(--tile-w) + var(--tile-h)) / 2) 0 0;
+}
+
+.player-area-active {
+  /* Highlight disabled for now */
+}
+
+/* Hand + melds + char in a horizontal row. */
+.player-hand-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+/* River. */
+.player-river-row {
+  display: flex;
+}
+
+/* ---------- Center panel ---------- */
+.table-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: var(--center-size);
+  height: var(--center-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+/* ---------- Center info ---------- */
+.center-info {
+  width: 100%;
+  height: 100%;
+  background: var(--info-bg);
+  padding: 6px 10px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #f3f3f3;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.round-line { display: flex; gap: 8px; font-size: 13px; }
+.round-name { font-weight: 700; }
+.round-honba, .round-kyotaku { opacity: 0.85; font-size: 11px; }
+.wall-line .wall-count { font-size: 11px; opacity: 0.8; }
+.dora-row { display: flex; gap: 2px; margin-top: 2px; }
+
+/* ---------- River ----------
+ * Always bottom perspective: horizontal rows of 6, left→right, wrap down.
+ */
+.river {
+  display: flex;
+  gap: 0;
+  padding: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  width: calc(6 * var(--tile-w));
+}
+
+/* ---------- Tile ---------- */
+.tile {
+  width: var(--tile-w);
+  height: var(--tile-h);
+  flex-shrink: 0;
+  user-select: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tile-face {
+  width: var(--tile-w);
+  height: var(--tile-h);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  transform-origin: center center;
+}
+
+.tile-rot0   { transform: rotate(0deg); }
+.tile-rot90  { transform: rotate(90deg); }
+.tile-rot180 { transform: rotate(180deg); }
+.tile-rot270 { transform: rotate(270deg); }
+
+.tile-aka .tile-face { /* red tiles use pre-colored images */ }
+
+.tile-dimmed { opacity: 0.35; }
+.tile-clickable { cursor: pointer; }
+.tile-clickable:hover { transform: translateY(-4px); }
+
+/* ---------- Hand layout ----------
+ * Always bottom perspective: horizontal row, tsumo on the right.
+ */
+.hand { display: flex; align-items: center; gap: 0; }
+.hand-tiles { display: flex; gap: 0; }
+.hand-tsumo { margin-left: 0; }
+
+/* ---------- Melds ----------
+ * Always bottom perspective: horizontal groups, called tile sideways.
+ */
+.melds { display: flex; gap: 0; flex-shrink: 0; align-items: flex-end; }
+.meld { display: flex; gap: 0; align-items: flex-end; }
+
+/* ---------- CharacterSlot (placeholder) ---------- */
+.character-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid #44444a;
+  border-radius: 6px;
+  color: #f3f3f3;
+  min-width: 56px;
+  font-size: 11px;
+}
+
+.character-portrait {
+  width: 36px;
+  height: 36px;
+  background: #2a2a30;
+  border: 1px solid #5a5a64;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  color: #c0c0c8;
+  font-size: 12px;
+}
+
+.character-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+
+.character-wind {
+  font-size: 12px;
+  color: #ffd770;
+  font-weight: bold;
+}
+
+.character-score {
+  font-variant-numeric: tabular-nums;
+}
+
+.character-riichi {
+  color: #ff6b6b;
+  font-size: 9px;
+}
+
+.character-mood-tense   .character-portrait { border-color: #ffa040; }
+.character-mood-happy   .character-portrait { border-color: #6bd66b; }
+.character-mood-shocked .character-portrait { border-color: #ff6b6b; }
+
+/* ---------- Action bar ---------- */
+.action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 6px;
+  background: rgba(0,0,0,0.35);
+}
+
+.action-btn {
+  background: #c89e54;
+  color: #1c1c1c;
+  border: 1px solid #6a4f24;
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-weight: bold;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.action-btn:disabled {
+  background: #4a4a52;
+  color: #888;
+  border-color: #3a3a40;
+  cursor: not-allowed;
+}

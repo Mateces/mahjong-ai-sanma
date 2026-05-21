@@ -1,0 +1,12 @@
+name = "mahjong-verify"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+account_id = "YOUR_ACCOUNT_ID"
+
+[vars]
+WORKER_TOKEN = "YOUR_WORKER_TOKEN"
+ADMIN_TOKEN = "YOUR_ADMIN_TOKEN"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"

@@ -1,0 +1,135 @@
+/* Minimal styles for the PWA. Designed mobile-first. */
+
+.screen {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 32px 20px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.splash, .menu, .download {
+  align-items: center;
+  text-align: center;
+  justify-content: center;
+}
+
+.splash h1, .menu h1 {
+  font-size: 2.2rem;
+  margin: 0;
+}
+
+.subtitle {
+  color: var(--muted, #888);
+  margin: 0 0 24px;
+}
+
+.detail {
+  color: var(--muted, #888);
+  font-size: 0.9rem;
+  max-width: 320px;
+}
+
+.error {
+  color: #ef4444;
+}
+
+.menu .version {
+  margin-top: 32px;
+  font-size: 0.8rem;
+  color: var(--muted, #666);
+  font-family: ui-monospace, monospace;
+}
+
+button.primary {
+  font-size: 1.05rem;
+  padding: 14px 28px;
+  border-radius: 12px;
+  background: var(--accent, #4f46e5);
+  color: white;
+  border: none;
+  cursor: pointer;
+  min-width: 240px;
+}
+
+button.primary:hover {
+  filter: brightness(1.1);
+}
+
+button.secondary {
+  font-size: 0.9rem;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--border, #444);
+  color: inherit;
+  cursor: pointer;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 12px;
+  background: var(--track, #2a2a2a);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent, #4f46e5);
+  transition: width 0.2s ease;
+}
+
+.progress-text {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  color: var(--muted, #888);
+}
+
+.game-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.info-card {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 10px;
+  padding: 14px 18px;
+}
+
+.info-card h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--muted, #aaa);
+}
+
+.info-card ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.info-card .ok { color: #22c55e; }
+.info-card .fail { color: #ef4444; }
+.info-card .detail { font-size: 0.85rem; color: var(--muted, #888); }
+
+.note {
+  margin-top: auto;
+  font-size: 0.85rem;
+  color: var(--muted, #888);
+  font-style: italic;
+}
+
+.error-banner {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  background: #ef4444;
+  color: white;
+  padding: 12px 16px;
+  border-radius: 10px;
+  text-align: center;
+}

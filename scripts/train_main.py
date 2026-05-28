@@ -382,7 +382,7 @@ def main() -> None:
     parser.add_argument("--best-save", default=None)
     parser.add_argument("--tensorboard", required=True)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--version", type=int, default=4)  # sanma uses v4 obs shape
+    parser.add_argument("--version", type=int, default=5)  # sanma obs/action layout
     parser.add_argument("--conv-channels", type=int, default=192)
     parser.add_argument("--num-blocks", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -475,7 +475,9 @@ def main() -> None:
     # Mortal's Brain emits phi of size 1024 by convention; we read it from a
     # zero-pass to stay robust to architecture tweaks.
     with torch.no_grad():
-        _dummy_obs = torch.zeros(1, 1012, 34, device=device)
+        from libriichi import consts as _consts
+        _obs_channels = _consts.obs_shape(args.version)[0]
+        _dummy_obs = torch.zeros(1, _obs_channels, 34, device=device)
         _phi_dim = mortal_raw(_dummy_obs).shape[-1]
     score_head_raw = ScoreHead(phi_dim=_phi_dim).to(device)
     rank_head_raw = RankHead(phi_dim=_phi_dim).to(device)

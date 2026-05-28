@@ -416,7 +416,7 @@ def main() -> None:
         help="weight on gap-prediction auxiliary loss (predicts log-scale "
         "distance from self to top and bottom scorers)",
     )
-    parser.add_argument("--pts", default="6,4,2,0", help="ranking points (audit S2 #6)")
+    parser.add_argument("--pts", default="15,0,-15", help="ranking points (sanma: 3 values, e.g. tenhou phoenix +30/0/-30; yonma: 4 values)")
     parser.add_argument("--save-every", type=int, default=200)
     parser.add_argument("--val-steps", type=int, default=50)
     parser.add_argument("--patience", type=int, default=20)
@@ -445,8 +445,8 @@ def main() -> None:
     )
 
     pts = [float(x) for x in args.pts.split(",")]
-    if len(pts) != 4:
-        raise ValueError(f"--pts needs 4 values, got {pts}")
+    if len(pts) not in (3, 4):
+        raise ValueError(f"--pts needs 3 (sanma) or 4 (yonma) values, got {pts}")
 
     save_path = Path(args.save)
     if is_rank0:

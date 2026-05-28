@@ -54,7 +54,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "mortal" / "mortal"))
+sys.path.insert(0, str(ROOT / "mortal"))
 
 # Pre-stub `config` so Mortal's `dataloader.py`/`config.py` top-level imports
 # don't try to read a non-existent config.toml. We rewrite `config.config`

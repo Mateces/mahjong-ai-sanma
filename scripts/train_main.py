@@ -38,6 +38,7 @@ import logging
 import os
 import random
 import shutil
+import socket
 import sys
 import time
 from datetime import datetime
@@ -68,6 +69,10 @@ sys.modules["config"] = _stub
 from dataloader import FileDatasetsIter  # noqa: E402
 from lr_scheduler import LinearWarmUpCosineAnnealingLR  # noqa: E402
 from model import Brain, DQN, AuxNet  # noqa: E402
+
+# Reporter is local to scripts/. Best-effort, swallows all errors.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import reporter  # noqa: E402
 
 
 # ---------- score-prediction auxiliary head ----------
@@ -490,6 +495,39 @@ def main() -> None:
     n_params = sum(sum(p.numel() for p in m.parameters()) for m in raw_models)
     if is_rank0:
         logging.info(f"total params: {n_params:,}")
+        reporter.event(
+            "train.start",
+            status="running",
+            severity="info",
+            message=f"sanma train start (world={world}, params={n_params:,}, max_steps={args.max_steps})",
+            data={
+                "world": world,
+                "device": str(device),
+                "version": args.version,
+                "n_params": n_params,
+                "batch_size": args.batch_size,
+                "max_steps": args.max_steps,
+                "warmup_steps": args.warmup_steps,
+                "save_every": args.save_every,
+                "val_steps": args.val_steps,
+                "lr_peak": args.lr_peak,
+                "lr_final": args.lr_final,
+                "num_blocks": args.num_blocks,
+                "conv_channels": args.conv_channels,
+                "weight_decay": args.weight_decay,
+                "min_q_weight": args.min_q_weight,
+                "score_weight": args.score_weight,
+                "rank_weight": args.rank_weight,
+                "gap_weight": args.gap_weight,
+                "save_path": str(save_path),
+                "best_path": str(best_path),
+                "train_globs": args.train_glob,
+                "val_globs": args.val_glob,
+                "host": socket.gethostname(),
+                "pid": os.getpid(),
+            },
+            timeout_ms=24 * 60 * 60 * 1000,
+        )
 
     # AdamW with decay only on conv/linear weights (mirrors Mortal). Build the
     # param groups from the unwrapped models — Optimizer holds Parameter refs
@@ -781,6 +819,48 @@ def main() -> None:
                 writer.add_scalar("step_per_sec", rate, steps)
                 writer.flush()
 
+                report_data = {
+                    "step": steps,
+                    "max_steps": args.max_steps,
+                    "progress": steps / max(args.max_steps, 1),
+                    "train_loss": float(train_avg["loss"]),
+                    "val_loss": float(val_avg["loss"]),
+                    "dqn": float(val_avg["dqn"]),
+                    "cql": float(val_avg["cql"]),
+                    "aux": float(val_avg["aux"]),
+                    "score": float(val_avg["score"]),
+                    "rank": float(val_avg["rank"]),
+                    "gap": float(val_avg["gap"]),
+                    "best_val_loss": float(best_val_loss),
+                    "improved": bool(improved),
+                    "cycles_since_best": cycles_since_best,
+                    "lr": float(scheduler.get_last_lr()[0]),
+                    "step_per_sec": float(rate),
+                    "world": world,
+                }
+                reporter.event(
+                    "train.step",
+                    status="running",
+                    severity="info",
+                    message=(
+                        f"step {steps}/{args.max_steps} "
+                        f"train={train_avg['loss']:.4f} val={val_avg['loss']:.4f} "
+                        f"best={best_val_loss:.4f} {rate:.1f} step/s"
+                        + ("  *NEW BEST*" if improved else "")
+                    ),
+                    data=report_data,
+                    skip_notify=True,
+                    timeout_ms=24 * 60 * 60 * 1000,
+                )
+                if improved:
+                    reporter.event(
+                        "train.best",
+                        status="success",
+                        severity="info",
+                        message=f"new best val_loss={best_val_loss:.4f} @ step {steps}",
+                        data=report_data,
+                    )
+
             stats = {k: 0.0 for k in stats}
 
             if is_rank0:
@@ -814,9 +894,36 @@ def main() -> None:
             if should_stop:
                 if is_rank0:
                     logging.info(f"no val improvement for {args.patience} saves → stopping")
+                    reporter.event(
+                        "train.end",
+                        status="success",
+                        severity="info",
+                        message=f"early stop (patience): step {steps}, best_val={best_val_loss:.4f}",
+                        data={
+                            "reason": "patience",
+                            "step": steps,
+                            "max_steps": args.max_steps,
+                            "best_val_loss": float(best_val_loss),
+                            "cycles_since_best": cycles_since_best,
+                        },
+                    )
                 break
 
     _cleanup_dist()
+    if is_rank0 and steps >= args.max_steps:
+        reporter.event(
+            "train.end",
+            status="success",
+            severity="info",
+            message=f"max_steps reached: step {steps}, best_val={best_val_loss:.4f}",
+            data={
+                "reason": "max_steps",
+                "step": steps,
+                "max_steps": args.max_steps,
+                "best_val_loss": float(best_val_loss),
+                "cycles_since_best": cycles_since_best,
+            },
+        )
 
 
 if __name__ == "__main__":
@@ -824,4 +931,25 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\ninterrupted; latest + best checkpoints are on disk")
+        if _rank() == 0:
+            reporter.event(
+                "train.end",
+                status="warning",
+                severity="warning",
+                message="interrupted by user (KeyboardInterrupt)",
+                data={"reason": "interrupt"},
+            )
         _cleanup_dist()
+    except Exception as e:
+        if _rank() == 0:
+            import traceback
+            tb = traceback.format_exc()
+            reporter.event(
+                "train.error",
+                status="failed",
+                severity="error",
+                message=f"{type(e).__name__}: {e}",
+                data={"traceback": tb[-2000:]},
+            )
+        _cleanup_dist()
+        raise

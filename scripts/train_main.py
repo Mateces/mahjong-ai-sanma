@@ -421,7 +421,7 @@ def main() -> None:
         help="weight on gap-prediction auxiliary loss (predicts log-scale "
         "distance from self to top and bottom scorers)",
     )
-    parser.add_argument("--pts", default="15,0,-15", help="ranking points (sanma: 3 values, e.g. tenhou phoenix +30/0/-30; yonma: 4 values)")
+    parser.add_argument("--pts", default="3,0,-3", help="ranking points (sanma: 3 values; yonma: 4 values). Default 3,0,-3 matches yonma's [6,4,2,0] in dynamic range so dqn loss stays in the same order of magnitude.")
     parser.add_argument("--save-every", type=int, default=200)
     parser.add_argument("--val-steps", type=int, default=50)
     parser.add_argument("--patience", type=int, default=20)
@@ -475,7 +475,7 @@ def main() -> None:
         num_blocks=args.num_blocks,
     ).to(device)
     dqn_raw = DQN(version=args.version).to(device)
-    aux_net_raw = AuxNet((4,)).to(device)
+    aux_net_raw = AuxNet((3,)).to(device)
     # Score-prediction auxiliary head. phi_dim must match Brain's output.
     # Mortal's Brain emits phi of size 1024 by convention; we read it from a
     # zero-pass to stay robust to architecture tweaks.

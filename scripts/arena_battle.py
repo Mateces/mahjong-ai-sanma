@@ -130,6 +130,7 @@ def rpc_send_with_retry(url, token, path, payload, *, attempts=5, base_delay=2.0
 def make_event(source: str, record: tuple, run_id: str, worker_id: int,
                challenger_name: str, champion_name: str) -> dict:
     seed, key, split_idx, names, scores, ranks, challenger_seat = record
+    # PyO3 serializes `[u8; 3]` as bytes; index/iterate gives ints either way.
     challenger_score = int(scores[challenger_seat])
     challenger_rank = int(ranks[challenger_seat]) + 1  # 1-indexed for humans
     return {

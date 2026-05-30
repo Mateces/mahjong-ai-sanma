@@ -46,14 +46,39 @@ from libriichi.arena import OneVsTwo  # noqa: E402
 from model import Brain, DQN  # noqa: E402
 
 
+def _checkpoint_meta(state: dict) -> tuple[int, int, int]:
+    """Return (version, conv_channels, num_blocks) regardless of yonma vs sanma format.
+
+    yonma stores under state["config"]["control"|"resnet"]; sanma's training
+    script (scripts/train_main.py) stores a flat dict under state["hyperparams"].
+    """
+    if "config" in state:
+        cfg = state["config"]
+        return (
+            int(cfg["control"].get("version", 1)),
+            int(cfg["resnet"]["conv_channels"]),
+            int(cfg["resnet"]["num_blocks"]),
+        )
+    if "hyperparams" in state:
+        hp = state["hyperparams"]
+        return (
+            int(hp.get("version", 1)),
+            int(hp["conv_channels"]),
+            int(hp["num_blocks"]),
+        )
+    raise KeyError(
+        "checkpoint has neither 'config' nor 'hyperparams' — cannot infer "
+        "model shape (keys: " + ", ".join(repr(k) for k in state) + ")"
+    )
+
+
 def build_engine(state_path: Path, name: str, device: torch.device) -> MortalEngine:
     state = torch.load(state_path, map_location="cpu", weights_only=False)
-    cfg = state["config"]
-    version = cfg["control"].get("version", 1)
+    version, conv_channels, num_blocks = _checkpoint_meta(state)
     brain = Brain(
         version=version,
-        conv_channels=cfg["resnet"]["conv_channels"],
-        num_blocks=cfg["resnet"]["num_blocks"],
+        conv_channels=conv_channels,
+        num_blocks=num_blocks,
     ).eval()
     dqn = DQN(version=version).eval()
     brain.load_state_dict(state["mortal"])

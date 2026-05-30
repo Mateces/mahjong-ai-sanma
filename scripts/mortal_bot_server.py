@@ -31,7 +31,10 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "mortal" / "mortal"))
+# In yonma layout, mortal package lives at mortal/mortal/. In sanma layout
+# (this repo), it's flattened to mortal/. Support both.
+_yonma_path = ROOT / "mortal" / "mortal"
+sys.path.insert(0, str(_yonma_path if _yonma_path.is_dir() else ROOT / "mortal"))
 
 _stub = types.ModuleType("config")
 _stub.config = {}

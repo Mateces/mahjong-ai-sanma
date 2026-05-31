@@ -2,8 +2,9 @@
 
 Each worker loops, running OneVsTwo for `--batch-seeds` seeds at a time,
 writing per-hanchan mjai logs to disk and posting per-hanchan event records
-to a single shared RPC source. Workers run until killed by the operator
-(SIGINT / SIGTERM). Total volume is whatever the workers managed to finish.
+(with kyoku-level stats) to a single shared RPC source. Workers run until
+killed by the operator (SIGINT / SIGTERM). Total volume is whatever the
+workers managed to finish.
 
 Seed scheduling avoids overlap: round N, worker w runs seeds in
   [seed_base + (N * workers + w) * batch_seeds,
@@ -14,17 +15,25 @@ All workers post to the same source so results aggregate cleanly. The source
 is created lazily by whichever worker reports first; a separate
 `worker.online` event tracks each worker's startup.
 
+RPC failures fall back to a per-worker missed file
+(`<log_dir>/<host>-w<id>-missed.jsonl`) and never block the arena. Mahjong
+state-machine, mjai-parse, ckpt-load, and OneVsTwo errors all raise and
+terminate the worker.
+
 Usage:
     python scripts/arena_battle.py \\
-        --challenger checkpoints/sanma-main.pth \\
+        --challenger checkpoints/sanma-main-best.pth.d \\
+        --challenger-model d \\
         --champion   checkpoints/sanma-main-best.pth \\
-        --challenger-name main --champion-name best \\
-        --run-id 3k-main-vs-best-2026-05-30 \\
-        --workers 6 --worker-id 0 \\
+        --champion-model e \\
+        --table A \\
+        --challenger-name d --champion-name e \\
+        --run-id d-vs-e-A-20260531 \\
+        --workers 3 --worker-id 0 \\
         --batch-seeds 10 \\
-        --seed-base 100000 --seed-key 0xC0FFEE \\
+        --seed-base 0xA00000 --seed-key 0xC0FFEE \\
         --rpc-token "$RPC_TOKEN" \\
-        --log-dir arena_runs/main-vs-best/mjai
+        --log-dir arena_runs/d-vs-e-A/mjai
 
 Stop a worker: SIGINT or SIGTERM. The script reports `worker.stopped`
 before exit. The shared RPC source is NEVER auto-completed (operator must
@@ -51,6 +60,7 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 _yonma_path = ROOT / "mortal" / "mortal"
 sys.path.insert(0, str(_yonma_path if _yonma_path.is_dir() else ROOT / "mortal"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 _stub = types.ModuleType("config")
 _stub.config = {}
@@ -59,8 +69,9 @@ sys.modules["config"] = _stub
 from engine import MortalEngine  # noqa: E402
 from libriichi.arena import OneVsTwo  # noqa: E402
 from model import Brain, DQN  # noqa: E402
+from per_game_stats import parse_mjai_path  # noqa: E402
 
-USER_AGENT = "sanma-arena-battle/0.2"
+USER_AGENT = "sanma-arena-battle/0.3"
 
 _stop_requested = False
 
@@ -112,6 +123,9 @@ def build_engine(state_path: Path, name: str, device: torch.device) -> MortalEng
     )
 
 
+# ---- RPC ------------------------------------------------------------------
+
+
 def rpc_post(url: str, token: str, path: str, payload, timeout: float = 30.0):
     full = url.rstrip("/") + path
     body = json.dumps(payload).encode("utf-8")
@@ -128,49 +142,128 @@ def rpc_post(url: str, token: str, path: str, payload, timeout: float = 30.0):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def rpc_send_with_retry(url, token, path, payload, *, attempts=5, base_delay=2.0):
+def _spool_missed(missed_path: Path, path: str, payload):
+    """Append a failed RPC payload to the per-worker spool file."""
+    missed_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(missed_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"path": path, "payload": payload},
+                            ensure_ascii=False) + "\n")
+
+
+def rpc_send_with_retry(url, token, path, payload, missed_path: Path,
+                        *, attempts=5, base_delay=2.0) -> bool:
+    """POST with exponential backoff. Returns True on success.
+
+    On final failure: warn to stderr + spool to missed_path + return False.
+    Never raises — RPC issues must NOT block the arena.
+    """
     last_err = None
     for i in range(attempts):
         try:
-            return rpc_post(url, token, path, payload)
+            rpc_post(url, token, path, payload)
+            return True
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
             last_err = e
             wait = base_delay * (2 ** i)
             print(f"[rpc] attempt {i + 1}/{attempts} failed: {e}; sleep {wait:.1f}s",
                   file=sys.stderr, flush=True)
             time.sleep(wait)
-    raise RuntimeError(f"rpc_post failed after {attempts} attempts: {last_err}")
+    print(f"[rpc] giving up after {attempts} attempts ({last_err}); "
+          f"spooling to {missed_path}",
+          file=sys.stderr, flush=True)
+    try:
+        _spool_missed(missed_path, path, payload)
+    except Exception as spool_err:
+        # Spool failure is bad but still must not raise — print loudly.
+        print(f"[rpc] CRITICAL: spool to {missed_path} failed: {spool_err}",
+              file=sys.stderr, flush=True)
+    return False
 
 
-def make_hanchan_event(source: str, record, run_id: str, worker_id: int,
-                       host: str, challenger_name: str, champion_name: str) -> dict:
-    seed, key, split_idx, names, scores, ranks, challenger_seat = record
+# ---- Event construction ---------------------------------------------------
+
+
+def make_hanchan_event(source: str, record, *, run_id: str, table: str,
+                       worker_id: int, host: str,
+                       challenger_model: str, champion_model: str,
+                       challenger_name: str, champion_name: str,
+                       seat_stats: dict, mjai_path: str) -> dict:
+    seed, key, split_idx, names, scores, ranks_bytes, challenger_seat = record
+    # ranks is a 3-byte bytes object, 0-based; convert to 1-based list[int]
+    if isinstance(ranks_bytes, (bytes, bytearray)):
+        ranks0 = list(ranks_bytes)
+    else:
+        ranks0 = list(ranks_bytes)
+    ranks1 = [int(r) + 1 for r in ranks0]
     challenger_score = int(scores[challenger_seat])
-    challenger_rank = int(ranks[challenger_seat]) + 1
+    challenger_rank = ranks1[challenger_seat]
+
+    # Per-seat model identity follows challenger seat + table.
+    # Table A: 1×challenger + 2×champion
+    # Table B: 1×challenger + 2×champion (same wiring; table label is just
+    # human-readable shorthand for which model is the challenger).
+    seat_model = {
+        challenger_seat: challenger_model,
+    }
+    for seat in range(3):
+        if seat != challenger_seat:
+            seat_model[seat] = champion_model
+
+    seats_payload = []
+    for seat in range(3):
+        st = seat_stats[seat]
+        seats_payload.append({
+            "seat": seat,
+            "model": seat_model[seat],
+            "score": int(scores[seat]),
+            "rank": ranks1[seat],
+            "kyoku_count": st["kyoku_count"],
+            "agari_kyoku": st["agari_kyoku"],
+            "tsumo_agari_kyoku": st["tsumo_agari_kyoku"],
+            "ron_agari_kyoku": st["ron_agari_kyoku"],
+            "riichi_kyoku": st["riichi_kyoku"],
+            "fuuro_kyoku": st["fuuro_kyoku"],
+            "houjuu_kyoku": st["houjuu_kyoku"],
+            "ryukyoku_kyoku": st["ryukyoku_kyoku"],
+        })
+
     return {
         "source": source,
         "type": "arena.hanchan",
         "status": "success",
         "severity": "info",
-        "message": f"seed={seed} split={split_idx} chal_seat={challenger_seat} "
-                   f"score={challenger_score} rank={challenger_rank}",
+        "message": (f"seed={seed} split={split_idx} chal_seat={challenger_seat} "
+                    f"score={challenger_score} rank={challenger_rank}"),
         "data": {
             "run_id": run_id,
+            "table": table,
             "worker_id": worker_id,
             "host": host,
             "seed": int(seed),
             "key": int(key),
             "split": int(split_idx),
             "challenger_seat": int(challenger_seat),
-            "names": list(names),
-            "scores": [int(s) for s in scores],
-            "ranks": [int(r) + 1 for r in ranks],
+            "challenger_model": challenger_model,
+            "champion_model": champion_model,
             "challenger_name": challenger_name,
             "champion_name": champion_name,
+            "scores": [int(s) for s in scores],
+            "ranks": ranks1,
+            "kyoku_count": int(seat_stats[0]["kyoku_count"]),
+            "seats": seats_payload,
+            "mjai_path": mjai_path,
         },
         "timeout_ms": 600000,
         "skip_notify": True,
     }
+
+
+def mjai_log_path(log_dir: Path, seed: int, key: int, split_idx: int) -> Path:
+    suffix = "abc"[int(split_idx)]
+    return log_dir / f"{int(seed)}_{int(key)}_{suffix}.json.gz"
+
+
+# ---- Main -----------------------------------------------------------------
 
 
 def main() -> None:
@@ -179,6 +272,12 @@ def main() -> None:
     p.add_argument("--champion", type=Path, required=True)
     p.add_argument("--challenger-name", default="challenger")
     p.add_argument("--champion-name", default="champion")
+    p.add_argument("--challenger-model", required=True,
+                   help="Short model identifier (e.g. 'd', 'e'). Used in event payload.")
+    p.add_argument("--champion-model", required=True,
+                   help="Short model identifier (e.g. 'd', 'e'). Used in event payload.")
+    p.add_argument("--table", required=True, choices=["A", "B"],
+                   help="Human-readable table label, e.g. A=1d+2e, B=1e+2d.")
     p.add_argument("--challenger-device", default="cpu")
     p.add_argument("--champion-device", default="cpu")
     p.add_argument("--run-id", required=True,
@@ -191,7 +290,7 @@ def main() -> None:
                    help="This worker's index in [0, workers).")
     p.add_argument("--batch-seeds", type=int, default=10,
                    help="Seeds per batch (each seed = 3 hanchans).")
-    p.add_argument("--seed-base", type=int, default=100000)
+    p.add_argument("--seed-base", type=lambda s: int(s, 0), default=100000)
     p.add_argument("--seed-key", type=lambda s: int(s, 0), default=0)
     p.add_argument("--rpc-url", default="https://rpc.moki.cat")
     p.add_argument("--rpc-token", required=True)
@@ -215,18 +314,22 @@ def main() -> None:
 
     source = f"sanma-arena-{args.run_id}{args.source_suffix}"
     host = socket.gethostname()
-    log_dir = str(args.log_dir.resolve())
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = Path(args.log_dir).resolve()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    missed_path = log_dir / f"{host}-w{args.worker_id}-missed.jsonl"
+
     print(f"worker {args.worker_id}/{args.workers} on {host}: source={source}")
+    print(f"  table={args.table} chal_model={args.challenger_model} cham_model={args.champion_model}")
     print(f"  log_dir={log_dir}")
     print(f"  challenger={args.challenger} champion={args.champion}")
-    print(f"  seed_base={args.seed_base} key=0x{args.seed_key:016x} batch_seeds={args.batch_seeds}")
+    print(f"  seed_base=0x{args.seed_base:x} key=0x{args.seed_key:016x} batch_seeds={args.batch_seeds}")
+    print(f"  missed_spool={missed_path}")
 
     chal_engine = build_engine(args.challenger, args.challenger_name,
                                torch.device(args.challenger_device))
     cham_engine = build_engine(args.champion, args.champion_name,
                                torch.device(args.champion_device))
-    env = OneVsTwo(disable_progress_bar=args.disable_progress_bar, log_dir=log_dir)
+    env = OneVsTwo(disable_progress_bar=args.disable_progress_bar, log_dir=str(log_dir))
 
     rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
         "source": source,
@@ -236,21 +339,24 @@ def main() -> None:
         "message": f"worker {args.worker_id}/{args.workers} on {host} starting",
         "data": {
             "run_id": args.run_id,
+            "table": args.table,
             "worker_id": args.worker_id,
             "workers": args.workers,
             "host": host,
             "challenger": str(args.challenger),
             "champion": str(args.champion),
+            "challenger_model": args.challenger_model,
+            "champion_model": args.champion_model,
             "challenger_name": args.challenger_name,
             "champion_name": args.champion_name,
-            "log_dir": log_dir,
+            "log_dir": str(log_dir),
             "seed_base": int(args.seed_base),
             "seed_key": int(args.seed_key),
             "batch_seeds": int(args.batch_seeds),
         },
         "timeout_ms": 3600000,
         "skip_notify": True,
-    })
+    }, missed_path)
 
     round_idx = 0
     total_hanchans = 0
@@ -277,30 +383,27 @@ def main() -> None:
             except BaseException as e:
                 err_text = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 print(err_text, file=sys.stderr, flush=True)
-                try:
-                    rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
-                        "source": source,
-                        "type": "worker.error",
-                        "status": "error",
-                        "severity": "error",
-                        "message": f"worker {args.worker_id} ({host}) round {round_idx} "
-                                   f"seed_start={seed_start}: {type(e).__name__}: {e}",
-                        "data": {
-                            "run_id": args.run_id,
-                            "worker_id": args.worker_id,
-                            "host": host,
-                            "round": round_idx,
-                            "seed_start": int(seed_start),
-                            "seed_count": int(seed_count),
-                            "exception_type": type(e).__name__,
-                            "exception_str": str(e),
-                            "traceback": err_text[-4000:],
-                        },
-                        "timeout_ms": 3600000,
-                    })
-                except Exception as rpc_e:
-                    print(f"[rpc] error-event post failed: {rpc_e}",
-                          file=sys.stderr, flush=True)
+                rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
+                    "source": source,
+                    "type": "worker.error",
+                    "status": "error",
+                    "severity": "error",
+                    "message": f"worker {args.worker_id} ({host}) round {round_idx} "
+                               f"seed_start={seed_start}: {type(e).__name__}: {e}",
+                    "data": {
+                        "run_id": args.run_id,
+                        "table": args.table,
+                        "worker_id": args.worker_id,
+                        "host": host,
+                        "round": round_idx,
+                        "seed_start": int(seed_start),
+                        "seed_count": int(seed_count),
+                        "exception_type": type(e).__name__,
+                        "exception_str": str(e),
+                        "traceback": err_text[-4000:],
+                    },
+                    "timeout_ms": 3600000,
+                }, missed_path)
                 raise
 
             dt = time.time() - t0
@@ -319,16 +422,32 @@ def main() -> None:
                   f"chal_ranks_round={ranks_this} total={total_hanchans} "
                   f"chal_total={chal_ranks_total}", flush=True)
 
+            # Parse mjai logs and build per-hanchan events. Mahjong/parse
+            # errors raise — they are bugs.
+            events_payload = []
+            for rec in records:
+                seed, key, split_idx, _, _, _, _ = rec
+                mjai_p = mjai_log_path(log_dir, seed, key, split_idx)
+                seat_stats = parse_mjai_path(mjai_p)
+                events_payload.append(make_hanchan_event(
+                    source, rec,
+                    run_id=args.run_id,
+                    table=args.table,
+                    worker_id=args.worker_id,
+                    host=host,
+                    challenger_model=args.challenger_model,
+                    champion_model=args.champion_model,
+                    challenger_name=args.challenger_name,
+                    champion_name=args.champion_name,
+                    seat_stats=seat_stats,
+                    mjai_path=str(mjai_p),
+                ))
+
             sent = 0
-            while sent < len(records):
-                slab = records[sent:sent + args.rpc_batch_size]
-                payload = [
-                    make_hanchan_event(source, rec, args.run_id, args.worker_id,
-                                       host, args.challenger_name, args.champion_name)
-                    for rec in slab
-                ]
+            while sent < len(events_payload):
+                slab = events_payload[sent:sent + args.rpc_batch_size]
                 rpc_send_with_retry(args.rpc_url, args.rpc_token,
-                                    "/api/events/batch", payload)
+                                    "/api/events/batch", slab, missed_path)
                 sent += len(slab)
 
             rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
@@ -340,6 +459,7 @@ def main() -> None:
                            f"+{len(records)} (own total {total_hanchans})",
                 "data": {
                     "run_id": args.run_id,
+                    "table": args.table,
                     "worker_id": args.worker_id,
                     "host": host,
                     "round": round_idx,
@@ -351,34 +471,32 @@ def main() -> None:
                 },
                 "timeout_ms": 3600000,
                 "skip_notify": True,
-            })
+            }, missed_path)
 
             round_idx += 1
     finally:
         elapsed = time.time() - t_start
-        try:
-            rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
-                "source": source,
-                "type": "worker.stopped",
-                "status": "ok" if not _stop_requested else "warning",
-                "severity": "info",
-                "message": f"w{args.worker_id}@{host} stopped after {round_idx} rounds, "
-                           f"{total_hanchans} hanchans, {elapsed:.0f}s",
-                "data": {
-                    "run_id": args.run_id,
-                    "worker_id": args.worker_id,
-                    "host": host,
-                    "rounds_completed": round_idx,
-                    "own_total_hanchans": total_hanchans,
-                    "own_chal_ranks_total": chal_ranks_total,
-                    "elapsed_seconds": round(elapsed, 1),
-                    "stop_requested": _stop_requested,
-                },
-                "timeout_ms": 3600000,
-                "skip_notify": True,
-            })
-        except Exception as e:
-            print(f"[rpc] stopped-event post failed: {e}", file=sys.stderr, flush=True)
+        rpc_send_with_retry(args.rpc_url, args.rpc_token, "/api/events", {
+            "source": source,
+            "type": "worker.stopped",
+            "status": "ok" if not _stop_requested else "warning",
+            "severity": "info",
+            "message": f"w{args.worker_id}@{host} stopped after {round_idx} rounds, "
+                       f"{total_hanchans} hanchans, {elapsed:.0f}s",
+            "data": {
+                "run_id": args.run_id,
+                "table": args.table,
+                "worker_id": args.worker_id,
+                "host": host,
+                "rounds_completed": round_idx,
+                "own_total_hanchans": total_hanchans,
+                "own_chal_ranks_total": chal_ranks_total,
+                "elapsed_seconds": round(elapsed, 1),
+                "stop_requested": _stop_requested,
+            },
+            "timeout_ms": 3600000,
+            "skip_notify": True,
+        }, missed_path)
         print(f"worker {args.worker_id} finished: rounds={round_idx} "
               f"hanchans={total_hanchans} elapsed={elapsed:.0f}s", flush=True)
 

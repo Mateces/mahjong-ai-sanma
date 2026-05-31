@@ -220,17 +220,32 @@ def test_unknown_event_raises():
 
 
 def test_score_conservation_violation_raises():
-    """Final scores summing to ≠ 105000 must raise."""
+    """Final scores summing to ≠ 105000 (and not a multiple-of-1000 deficit
+    consistent with stranded reach sticks) must raise."""
     events = _hanchan(
         _kyoku(
             [
-                # deltas don't sum to 0 -> running scores drift -> sum != 105000
+                # deltas off by 250 — not a kyotaku-carry pattern
                 {"type": "hora", "actor": 0, "target": 0,
-                 "deltas": [5000, -1000, -1000]},  # sums to 3000, not 0
+                 "deltas": [4250, -1000, -3000]},
             ],
         ),
     )
-    with pytest.raises(ValueError, match="final scores do not sum"):
+    with pytest.raises(ValueError, match="inconsistent"):
+        parse_mjai_stream(iter(events))
+
+
+def test_score_above_total_raises():
+    """Sum > 105000 must raise even if it's a multiple of 1000."""
+    events = _hanchan(
+        _kyoku(
+            [
+                {"type": "hora", "actor": 0, "target": 0,
+                 "deltas": [10000, -3000, -3000]},  # sums to +4000
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="inconsistent"):
         parse_mjai_stream(iter(events))
 
 

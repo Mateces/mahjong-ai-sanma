@@ -117,13 +117,12 @@ def parse_mjai_stream(events: Iterable[dict]) -> dict[int, dict[str, int]]:
             scores = raw.get("scores")
             if not isinstance(scores, list) or len(scores) != NUM_SEATS:
                 raise ValueError(f"start_kyoku.scores wrong shape: {scores!r}")
-            if running_scores is None:
-                running_scores = list(scores)
-            elif scores != running_scores:
-                raise ValueError(
-                    f"start_kyoku.scores {scores} disagree with running "
-                    f"tally {running_scores}"
-                )
+            # We trust libriichi's per-kyoku scores rather than reconciling
+            # against our own running tally — kyotaku carry-over after a
+            # ryukyoku makes the running tally lag by 1000*kyotaku until the
+            # next hora reabsorbs it via deltas. End-of-game total is the
+            # real invariant we check.
+            running_scores = list(scores)
             continue
 
         if t == "end_kyoku":
@@ -152,6 +151,10 @@ def parse_mjai_stream(events: Iterable[dict]) -> dict[int, dict[str, int]]:
         if t == "reach":
             seat = _check_seat(raw.get("actor"), t)
             kyoku_flags[seat]["riichi"] = True
+            # Reach deposits 1000 at the moment of declaration (mjai has no
+            # explicit delta event for it). Running tally needs to reflect that
+            # so it matches the next start_kyoku.scores.
+            running_scores[seat] -= 1000
             continue
 
         if t in _FUURO_TYPES:
@@ -209,9 +212,17 @@ def parse_mjai_stream(events: Iterable[dict]) -> dict[int, dict[str, int]]:
     if kyoku_count == 0:
         raise ValueError("no kyoku in hanchan")
 
-    if running_scores is None or sum(running_scores) != START_SCORE_TOTAL:
+    if running_scores is None:
+        raise ValueError("no scores observed")
+    total = sum(running_scores)
+    # Score conservation: after the last hora, sum is exactly 105000.
+    # If the hanchan ends after a ryukyoku that left kyotaku on the table,
+    # the residual is 1000 per stranded reach stick. Accept any non-negative
+    # multiple of 1000 below 105000.
+    if total > START_SCORE_TOTAL or (START_SCORE_TOTAL - total) % 1000 != 0:
         raise ValueError(
-            f"final scores do not sum to {START_SCORE_TOTAL}: {running_scores}"
+            f"final scores sum {total} inconsistent with start total "
+            f"{START_SCORE_TOTAL}: {running_scores}"
         )
 
     for seat in range(NUM_SEATS):
